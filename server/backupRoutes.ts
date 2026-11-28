@@ -1,3 +1,4 @@
+import { execSync } from 'child_process';
 import crypto from 'crypto';
 import express, { Router } from 'express';
 import fs from 'fs';
@@ -13,6 +14,7 @@ const ALLOWED_ROOT_DIRS = ['src', 'server', 'public'];
 const ALLOWED_ROOT_FILES = [
   'index.html',
   'package.json',
+  'package-lock.json',
   'tsconfig.json',
   'vite.config.ts',
   'server.ts',
@@ -148,27 +150,25 @@ export function createBackupRouter(): Router {
       }
     }
 
-    // Fallback when deployed as a compiled bundle without src/ or server/ directories
-    if (!hasSourceDirs) {
-      const distAbs = path.resolve(projectRoot, 'dist');
-      if (distAbs.startsWith(projectRoot + path.sep) && fs.existsSync(distAbs) && fs.statSync(distAbs).isDirectory()) {
-        includedDirs.push('dist');
-        const walkDist = (dirAbsPath: string, zipRelDir: string) => {
-          const entries = fs.readdirSync(dirAbsPath, { withFileTypes: true });
-          for (const entry of entries) {
-            if (entry.isSymbolicLink()) continue;
-            const entryAbs = path.resolve(dirAbsPath, entry.name);
-            if (!entryAbs.startsWith(projectRoot + path.sep)) continue;
-            const entryZipPath = `${zipRelDir}/${entry.name}`;
-            if (entry.isDirectory()) {
-              walkDist(entryAbs, entryZipPath);
-            } else if (entry.isFile() && !entry.name.endsWith('.map') && !isSensitiveOrExcludedName(entry.name)) {
-              files.push({ absPath: entryAbs, zipPath: entryZipPath });
-            }
+    // Always include compiled production dist/ (excluding .map files) so ZIP can be uploaded & started directly on HostyCare
+    const distAbs = path.resolve(projectRoot, 'dist');
+    if (distAbs.startsWith(projectRoot + path.sep) && fs.existsSync(distAbs) && fs.statSync(distAbs).isDirectory()) {
+      includedDirs.push('dist');
+      const walkDist = (dirAbsPath: string, zipRelDir: string) => {
+        const entries = fs.readdirSync(dirAbsPath, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isSymbolicLink()) continue;
+          const entryAbs = path.resolve(dirAbsPath, entry.name);
+          if (!entryAbs.startsWith(projectRoot + path.sep)) continue;
+          const entryZipPath = `${zipRelDir}/${entry.name}`;
+          if (entry.isDirectory()) {
+            walkDist(entryAbs, entryZipPath);
+          } else if (entry.isFile() && !entry.name.endsWith('.map') && !isSensitiveOrExcludedName(entry.name)) {
+            files.push({ absPath: entryAbs, zipPath: entryZipPath });
           }
-        };
-        walkDist(distAbs, 'dist');
-      }
+        }
+      };
+      walkDist(distAbs, 'dist');
     }
 
     for (const fileName of ALLOWED_ROOT_FILES) {
@@ -229,6 +229,16 @@ export function createBackupRouter(): Router {
     };
 
     try {
+      const distServerExists = fs.existsSync(path.join(projectRoot, 'dist', 'server.cjs'));
+      const distHtmlExists = fs.existsSync(path.join(projectRoot, 'dist', 'index.html'));
+      if (
+        (!distServerExists || !distHtmlExists) &&
+        fs.existsSync(path.join(projectRoot, 'server.ts')) &&
+        fs.existsSync(path.join(projectRoot, 'index.html'))
+      ) {
+        execSync('npm run build', { cwd: projectRoot, stdio: 'ignore' });
+      }
+
       const scan = collectAccessibleProjectFiles(projectRoot);
       const dbBackup = ecommerceDb.getSanitizedBackupData();
 
@@ -281,13 +291,41 @@ export function createBackupRouter(): Router {
         restoreInstructions: {
           localOrVps: ['1. Extract ZIP archive', '2. Copy .env.example to .env and configure your keys', '3. Run: npm install', '4. Run: npm run build', '5. Run: npm start'],
           hostycareCpanel: [
-            '1. Extract ZIP archive and run npm install && npm run build (or upload built dist/)',
-            '2. In cPanel > Setup Node.js App, set Node 20.x/22.x, Production mode, Startup file: app.js',
-            '3. Configure NODE_ENV=production and optional keys in cPanel Environment Variables',
-            '4. Click Run NPM Install and Restart App',
+            '1. In HostyCare cPanel > File Manager, upload this ZIP into a folder outside public_html (e.g. /home/yourusername/wdh-app) and Extract it.',
+            '2. Open cPanel > Setup Node.js App > Create Application: Node.js 20.x/22.x, Production mode, Application root: wdh-app, Startup file: app.js.',
+            '3. Add Environment Variables: NODE_ENV=production (plus optional GEMINI_API_KEY, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET).',
+            '4. Click Run NPM Install, then click Start / Restart App.',
           ],
         },
       };
+
+      const hostycareUploadGuide = [
+        'WATCH VIDEO, DREAM IN HAND - HOSTYCARE CPANEL ZIP UPLOAD GUIDE',
+        '================================================================',
+        '',
+        'This ZIP package includes pre-built production files (dist/index.html, dist/server.cjs, dist/assets/),',
+        'the HostyCare CommonJS startup file (app.js), package.json, package-lock.json, and full source files.',
+        '',
+        'STEPS TO UPLOAD & DEPLOY ON HOSTYCARE CPANEL:',
+        '1. Log in to HostyCare cPanel -> File Manager.',
+        '2. Create a folder outside public_html (example: /home/yourusername/wdh-app).',
+        '3. Upload this ZIP file inside that folder and click "Extract" (files extract directly into wdh-app/).',
+        '4. Open cPanel -> Software -> Setup Node.js App -> Create Application:',
+        '   - Node.js version: 20.x or 22.x (minimum 18.x)',
+        '   - Application mode: Production',
+        '   - Application root: wdh-app',
+        '   - Application URL: yourdomain.com',
+        '   - Application startup file: app.js',
+        '5. Click "Create", then add Environment Variables (optional except NODE_ENV):',
+        '   - NODE_ENV = production',
+        '   - GEMINI_API_KEY = (optional)',
+        '   - RAZORPAY_KEY_ID = (optional)',
+        '   - RAZORPAY_KEY_SECRET = (optional)',
+        '   - DB_PATH = (optional, defaults to ./data/wdh_ecommerce.db)',
+        '6. Click "Run NPM Install".',
+        '7. Click "Restart" (or "Start App") and open your domain.',
+        '',
+      ].join('\n');
 
       const { ZipArchive } = await import('archiver');
       await new Promise<void>((resolve, reject) => {
@@ -304,6 +342,7 @@ export function createBackupRouter(): Router {
           archive.file(item.absPath, { name: item.zipPath });
         }
 
+        archive.append(hostycareUploadGuide, { name: 'HOSTYCARE_UPLOAD_GUIDE.txt' });
         archive.append(dbBackup.schemaSql, { name: 'database-backup/schema.sql' });
         archive.append(JSON.stringify(sanitizedApplicationData, null, 2), {
           name: 'database-backup/application-data-sanitized.json',

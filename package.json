@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "postinstall": "node -e \"const fs=require('fs'),cp=require('child_process');if(fs.existsSync('server.ts')&&fs.existsSync('index.html')&&process.env.SKIP_POSTINSTALL_BUILD!=='1'){cp.execSync('npm run build',{stdio:'inherit'});}\"",
+    "postinstall": "node -e \"const fs=require('fs'),cp=require('child_process');if(fs.existsSync('server.ts')&&fs.existsSync('index.html')&&(!fs.existsSync('dist/server.cjs')||!fs.existsSync('dist/index.html'))&&process.env.SKIP_POSTINSTALL_BUILD!=='1'){cp.execSync('npm run build',{stdio:'inherit'});}\"",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
